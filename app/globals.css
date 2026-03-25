@@ -171,9 +171,11 @@ main {
 
 .roiGuide {
   position: absolute;
-  border: 3px dashed rgba(255, 255, 255, 0.88);
+  border: 4px solid rgba(255, 255, 255, 0.92);
   border-radius: 24px;
-  box-shadow: inset 0 0 0 9999px rgba(13, 23, 36, 0.18);
+  box-shadow:
+    0 0 0 2px rgba(245, 93, 45, 0.55),
+    inset 0 0 0 9999px rgba(13, 23, 36, 0.16);
   pointer-events: none;
 }
 
@@ -209,6 +211,20 @@ main {
   color: white;
   font-size: 4.5rem;
   font-weight: 900;
+}
+
+.shootNowOverlay {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(245, 93, 45, 0.92);
+  color: white;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  box-shadow: 0 10px 24px rgba(245, 93, 45, 0.32);
 }
 
 .statusText {

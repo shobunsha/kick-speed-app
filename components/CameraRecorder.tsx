@@ -45,13 +45,13 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
       case 'preparing':
         return '背面カメラを起動しています。少しお待ちください。';
       case 'countdown':
-        return '位置を固定したまま待ち、表示が変わったらすぐキックしてください。';
+        return '位置を固定したまま待ち、表示が「今蹴ってください」に変わったらキックしてください。';
       case 'recording':
-        return 'ボールがガイド範囲内を通るように、今すぐキックしてください。';
+        return 'ボールがガイド中央を横切るように、今すぐキックしてください。';
       case 'processing':
         return '録画後に自動で解析へ進みます。';
       default:
-        return `ボールと蹴り出し方向がガイド範囲に入る位置にスマホを固定してください。録画時間は約${durationMs / 1000}秒です。`;
+        return `ボールと蹴り出し方向がガイド中央に入る位置にスマホを固定してください。録画時間は約${durationMs / 1000}秒です。`;
     }
   }, [durationMs, state]);
 
@@ -97,6 +97,8 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
     setState('preparing');
 
     try {
+      console.info('[CameraRecorder] device info', getClientDeviceInfo());
+
       const unsupportedMessage = getCameraUnavailableMessage();
 
       if (unsupportedMessage) {
@@ -189,6 +191,7 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
       setState('processing');
       try {
         const blob = new Blob(chunksRef.current, { type: mimeType });
+        await logRecordedVideoMetadata(blob);
         await onRecorded(blob);
       } catch (processingError) {
         setError(
@@ -205,7 +208,7 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
     recorder.start(200);
     stopTimerRef.current = window.setTimeout(() => {
       recorder.stop();
-    }, durationMs);
+    }, durationMs + 350);
   };
 
   return (
@@ -222,9 +225,10 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
             height: `${(DETECTION_ROI.bottom - DETECTION_ROI.top) * 100}%`,
           }}
         >
-          <span className="roiGuideLabel">この範囲でキック</span>
+          <span className="roiGuideLabel">ガイド中央を通す</span>
         </div>
         {state === 'countdown' && <div className="countdownOverlay">{countdown}</div>}
+        {state === 'recording' && <div className="shootNowOverlay">今蹴ってください</div>}
         {state === 'idle' && <div className="cameraOverlay">背面カメラを使います</div>}
       </div>
 
@@ -307,4 +311,51 @@ function isIPhoneLike() {
   }
 
   return /iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function getClientDeviceInfo() {
+  if (typeof navigator === 'undefined') {
+    return { userAgent: 'server', isIPhone: false, isSafari: false };
+  }
+
+  const userAgent = navigator.userAgent;
+  return {
+    userAgent,
+    isIPhone: /iPhone|iPad|iPod/i.test(userAgent),
+    isSafari: /Safari/i.test(userAgent) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(userAgent),
+  };
+}
+
+async function logRecordedVideoMetadata(blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const video = document.createElement('video');
+  video.preload = 'metadata';
+  video.playsInline = true;
+  video.muted = true;
+  video.src = url;
+
+  try {
+    await new Promise<void>((resolve) => {
+      const timeoutId = window.setTimeout(resolve, 1500);
+      const done = () => {
+        window.clearTimeout(timeoutId);
+        resolve();
+      };
+      video.onloadedmetadata = done;
+      video.onloadeddata = done;
+      video.ondurationchange = done;
+      video.onerror = done;
+    });
+
+    console.info('[CameraRecorder] recorded video metadata', {
+      size: blob.size,
+      type: blob.type,
+      width: video.videoWidth,
+      height: video.videoHeight,
+      duration: video.duration,
+      readyState: video.readyState,
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }

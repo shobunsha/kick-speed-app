@@ -7,6 +7,7 @@ import {
   DETECTION_AREA_LIMITS,
   DETECTION_ROI,
   FALLBACK_BALL_SHAPE_THRESHOLDS,
+  IOS_SAFARI_RELAXED_LIMITS,
   MIN_DISPLACEMENT_PIXELS,
   MOTION_THRESHOLD,
   RESULT_SPEED_CLAMP,
@@ -32,6 +33,7 @@ export async function analyzeKickVideo({
   cv,
   videoBlob,
 }: AnalyzeKickVideoParams): Promise<AnalysisResult> {
+  const device = detectClientDevice();
   const videoUrl = URL.createObjectURL(videoBlob);
   const video = document.createElement('video');
   video.src = videoUrl;
@@ -40,6 +42,16 @@ export async function analyzeKickVideo({
 
   try {
     await waitForLoadedMetadata(video);
+    await ensurePlayableVideo(video);
+
+    console.info('[analyzeKickVideo] 動画メタデータ', {
+      device,
+      width: video.videoWidth,
+      height: video.videoHeight,
+      duration: video.duration,
+      blobSize: videoBlob.size,
+      estimatedFps: Math.round((1000 / ANALYSIS_FRAME_INTERVAL_MS) * 10) / 10,
+    });
 
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
@@ -58,6 +70,9 @@ export async function analyzeKickVideo({
     let normalAcceptedCount = 0;
     let fallbackAcceptedCount = 0;
     let detectedModes: Array<'normal' | 'fallback'> = [];
+    const frameCandidateCounts: number[] = [];
+    const frameAcceptedCounts: number[] = [];
+    const frameModes: string[] = [];
 
     for (
       let currentTime = 0;
@@ -72,13 +87,17 @@ export async function analyzeKickVideo({
         imageData,
         previousGray,
         previousTrackedSample,
-        currentTime
+        currentTime,
+        device
       );
       const sample = detection.sample;
       roiCandidateCount += detection.roiCandidateCount;
       acceptedCandidateCount += detection.acceptedCandidateCount;
       normalAcceptedCount += detection.normalAcceptedCount;
       fallbackAcceptedCount += detection.fallbackAcceptedCount;
+      frameCandidateCounts.push(detection.roiCandidateCount);
+      frameAcceptedCounts.push(detection.acceptedCandidateCount);
+      frameModes.push(detection.mode);
 
       if (sample) {
         samples.push(sample);
@@ -107,65 +126,68 @@ export async function analyzeKickVideo({
       : detectedModes.includes('fallback')
         ? 'fallback判定'
         : '未採用';
-
-    if (candidateSamples.length < 2) {
-      logAnalysisFailure({
-        roiCandidateCount,
-        acceptedCandidateCount,
-        normalAcceptedCount,
-        fallbackAcceptedCount,
-        candidateFrames: candidateSamples.length,
-        adoptedFrames: filteredSamples.length,
-        reason: '速度計算に必要なフレーム不足',
-        mode: modeLabel,
-      });
-      throw new Error(
-        'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。'
-      );
-    }
-
-    if (candidateSamples.length < ANALYSIS_SAMPLE_LIMITS.minCandidateFrames) {
-      logAnalysisFailure({
-        roiCandidateCount,
-        acceptedCandidateCount,
-        normalAcceptedCount,
-        fallbackAcceptedCount,
-        candidateFrames: candidateSamples.length,
-        adoptedFrames: filteredSamples.length,
-        reason: '候補フレーム不足',
-        mode: modeLabel,
-      });
-      throw new Error(
-        'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。'
-      );
-    }
-
-    if (filteredSamples.length < ANALYSIS_SAMPLE_LIMITS.minStableFrames) {
-      logAnalysisFailure({
-        roiCandidateCount,
-        acceptedCandidateCount,
-        normalAcceptedCount,
-        fallbackAcceptedCount,
-        candidateFrames: candidateSamples.length,
-        adoptedFrames: filteredSamples.length,
-        reason: '採用フレーム不足',
-        mode: modeLabel,
-      });
-      throw new Error(
-        'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。'
-      );
-    }
-
-    console.info('[analyzeKickVideo] 解析成功', {
+    const analysisSummary = {
       roi: DETECTION_ROI,
+      device,
+      extractedFrames: samples.length,
+      candidateFrames: candidateSamples.length,
+      adoptedFrames: filteredSamples.length,
       roiCandidateCount,
       acceptedCandidateCount,
       normalAcceptedCount,
       fallbackAcceptedCount,
-      candidateFrames: candidateSamples.length,
-      adoptedFrames: filteredSamples.length,
+      frameCandidateCounts,
+      frameAcceptedCounts,
+      frameModes,
       mode: modeLabel,
-    });
+    };
+
+    if (candidateSamples.length < 2) {
+      logAnalysisFailure({
+        ...analysisSummary,
+        reason: '速度計算に必要なフレーム不足',
+      });
+      const fallbackResult = buildMotionFallbackResult(candidateSamples, device);
+      if (fallbackResult) {
+        console.info('[analyzeKickVideo] 簡易動体 fallback で結果化', fallbackResult);
+        return fallbackResult;
+      }
+      throw new Error(
+        buildRetryMessage(device)
+      );
+    }
+
+    if (candidateSamples.length < getMinCandidateFrames(device)) {
+      logAnalysisFailure({
+        ...analysisSummary,
+        reason: '候補フレーム不足',
+      });
+      const fallbackResult = buildMotionFallbackResult(candidateSamples, device);
+      if (fallbackResult) {
+        console.info('[analyzeKickVideo] 簡易動体 fallback で結果化', fallbackResult);
+        return fallbackResult;
+      }
+      throw new Error(
+        buildRetryMessage(device)
+      );
+    }
+
+    if (filteredSamples.length < getMinStableFrames(device)) {
+      logAnalysisFailure({
+        ...analysisSummary,
+        reason: '採用フレーム不足',
+      });
+      const fallbackResult = buildMotionFallbackResult(candidateSamples, device);
+      if (fallbackResult) {
+        console.info('[analyzeKickVideo] 簡易動体 fallback で結果化', fallbackResult);
+        return fallbackResult;
+      }
+      throw new Error(
+        buildRetryMessage(device)
+      );
+    }
+
+    console.info('[analyzeKickVideo] 解析成功', analysisSummary);
 
     const estimatedSpeedKmh = estimateInitialSpeedKmh(filteredSamples);
 
@@ -207,7 +229,8 @@ function detectMotionSample(
   imageData: ImageData,
   previousGray: InstanceType<OpenCvModule['Mat']> | null,
   previousTrackedSample: AnalysisSample | null,
-  time: number
+  time: number,
+  device: ReturnType<typeof detectClientDevice>
 ): DetectionResult {
   const source = cv.matFromImageData(imageData);
   const gray = new cv.Mat();
@@ -260,7 +283,7 @@ function detectMotionSample(
       const contour = contours.get(index);
       const area = cv.contourArea(contour);
 
-      if (area < DETECTION_AREA_LIMITS.min || area > DETECTION_AREA_LIMITS.max) {
+      if (area < getDetectionAreaMin(device) || area > DETECTION_AREA_LIMITS.max) {
         contour.delete();
         continue;
       }
@@ -292,11 +315,11 @@ function detectMotionSample(
         aspectRatio >= BALL_SHAPE_THRESHOLDS.minAspectRatio &&
         aspectRatio <= BALL_SHAPE_THRESHOLDS.maxAspectRatio;
       const fallbackQualified =
-        area >= FALLBACK_BALL_SHAPE_THRESHOLDS.minArea &&
+        area >= getFallbackMinArea(device) &&
         circularity >= FALLBACK_BALL_SHAPE_THRESHOLDS.minCircularity &&
         aspectRatio >= FALLBACK_BALL_SHAPE_THRESHOLDS.minAspectRatio &&
         aspectRatio <= FALLBACK_BALL_SHAPE_THRESHOLDS.maxAspectRatio &&
-        trackDistance >= FALLBACK_BALL_SHAPE_THRESHOLDS.minDisplacementPx;
+        trackDistance >= getFallbackMinDisplacement(device);
 
       if (!normalQualified && !fallbackQualified) {
         contour.delete();
@@ -311,11 +334,11 @@ function detectMotionSample(
       }
 
       const trackingPenalty =
-        previousTrackedSample && trackDistance > BALL_SHAPE_THRESHOLDS.maxTrackDistancePx
+        previousTrackedSample && trackDistance > getMaxTrackDistancePx(device)
           ? -2.2
           : 0;
       const proximityScore = previousTrackedSample
-        ? Math.max(0, 1 - trackDistance / BALL_SHAPE_THRESHOLDS.maxTrackDistancePx)
+        ? Math.max(0, 1 - trackDistance / getMaxTrackDistancePx(device))
         : 0.45;
       const areaScore = Math.min(area / 1100, 1.25);
       const circularityScore = circularity * (normalQualified ? 1.8 : 0.9);
@@ -474,39 +497,149 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function logAnalysisFailure({
-  roiCandidateCount,
-  acceptedCandidateCount,
-  normalAcceptedCount,
-  fallbackAcceptedCount,
-  candidateFrames,
-  adoptedFrames,
-  reason,
-  mode,
-}: {
+function buildMotionFallbackResult(
+  samples: AnalysisSample[],
+  device: ReturnType<typeof detectClientDevice>
+): AnalysisResult | null {
+  if (samples.length < 2) {
+    return null;
+  }
+
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const displacementPx = Math.hypot(last.centerX - first.centerX, last.centerY - first.centerY);
+  const elapsed = Math.max(last.time - first.time, ANALYSIS_FRAME_INTERVAL_MS / 1000);
+
+  if (displacementPx < getFallbackMinDisplacement(device)) {
+    return null;
+  }
+
+  const estimatedBallDiameterPx = Math.max((first.radiusPx + last.radiusPx) / 2 * 2, 1);
+  const pixelsPerMeter = Math.max(
+    estimatedBallDiameterPx / BALL_DIAMETER_METERS,
+    DEFAULT_PIXELS_PER_METER
+  );
+  const estimatedSpeedKmh = clamp((displacementPx / pixelsPerMeter / elapsed) * 3.6, 5, 110);
+
+  return {
+    estimatedSpeedKmh,
+    detectionFrames: samples.length,
+    samples: samples.map(({ grayFrame: _grayFrame, ...sample }) => sample),
+  };
+}
+
+function detectClientDevice() {
+  if (typeof navigator === 'undefined') {
+    return {
+      isIPhone: false,
+      isSafari: false,
+      isIosSafari: false,
+      userAgent: 'server',
+    };
+  }
+
+  const userAgent = navigator.userAgent;
+  const isIPhone = /iPhone|iPad|iPod/i.test(userAgent);
+  const isSafari = /Safari/i.test(userAgent) && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(userAgent);
+
+  return {
+    isIPhone,
+    isSafari,
+    isIosSafari: isIPhone && isSafari,
+    userAgent,
+  };
+}
+
+function getDetectionAreaMin(device: ReturnType<typeof detectClientDevice>) {
+  return device.isIosSafari ? IOS_SAFARI_RELAXED_LIMITS.detectionAreaMin : DETECTION_AREA_LIMITS.min;
+}
+
+function getMaxTrackDistancePx(device: ReturnType<typeof detectClientDevice>) {
+  return device.isIosSafari
+    ? IOS_SAFARI_RELAXED_LIMITS.maxTrackDistancePx
+    : BALL_SHAPE_THRESHOLDS.maxTrackDistancePx;
+}
+
+function getFallbackMinArea(device: ReturnType<typeof detectClientDevice>) {
+  return device.isIosSafari ? IOS_SAFARI_RELAXED_LIMITS.fallbackMinArea : FALLBACK_BALL_SHAPE_THRESHOLDS.minArea;
+}
+
+function getFallbackMinDisplacement(device: ReturnType<typeof detectClientDevice>) {
+  return device.isIosSafari
+    ? IOS_SAFARI_RELAXED_LIMITS.fallbackMinDisplacementPx
+    : FALLBACK_BALL_SHAPE_THRESHOLDS.minDisplacementPx;
+}
+
+function getMinStableFrames(device: ReturnType<typeof detectClientDevice>) {
+  return device.isIosSafari ? IOS_SAFARI_RELAXED_LIMITS.minStableFrames : ANALYSIS_SAMPLE_LIMITS.minStableFrames;
+}
+
+function getMinCandidateFrames(device: ReturnType<typeof detectClientDevice>) {
+  return device.isIosSafari
+    ? IOS_SAFARI_RELAXED_LIMITS.minCandidateFrames
+    : ANALYSIS_SAMPLE_LIMITS.minCandidateFrames;
+}
+
+function buildRetryMessage(device: ReturnType<typeof detectClientDevice>) {
+  if (device.isIosSafari) {
+    return 'ボールがガイド範囲外か、動きの検出フレームが不足しました。ボールをガイド中央に置いて、まず軽く横に動かしてみてください。';
+  }
+
+  return 'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。';
+}
+
+function ensurePlayableVideo(video: HTMLVideoElement): Promise<void> {
+  if (video.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, 1200);
+
+    function cleanup() {
+      window.clearTimeout(timeoutId);
+      video.onloadeddata = null;
+      video.ondurationchange = null;
+    }
+
+    const handleReady = () => {
+      if (video.readyState >= 1 && Number.isFinite(video.duration) && video.duration > 0) {
+        cleanup();
+        resolve();
+      }
+    };
+
+    video.onloadeddata = handleReady;
+    video.ondurationchange = handleReady;
+  });
+}
+
+function logAnalysisFailure(payload: {
+  roi: typeof DETECTION_ROI;
+  device: ReturnType<typeof detectClientDevice>;
+  extractedFrames: number;
+  candidateFrames: number;
+  adoptedFrames: number;
   roiCandidateCount: number;
   acceptedCandidateCount: number;
   normalAcceptedCount: number;
   fallbackAcceptedCount: number;
-  candidateFrames: number;
-  adoptedFrames: number;
+  frameCandidateCounts: number[];
+  frameAcceptedCounts: number[];
+  frameModes: string[];
   reason: string;
   mode: string;
 }) {
   console.warn('[analyzeKickVideo] 解析失敗', {
-    roi: DETECTION_ROI,
-    roiCandidateCount,
-    acceptedCandidateCount,
-    normalAcceptedCount,
-    fallbackAcceptedCount,
-    candidateFrames,
-    adoptedFrames,
-    reason,
-    mode,
+    ...payload,
     thresholds: {
       area: DETECTION_AREA_LIMITS,
       normalShape: BALL_SHAPE_THRESHOLDS,
       fallbackShape: FALLBACK_BALL_SHAPE_THRESHOLDS,
+      iosSafari: IOS_SAFARI_RELAXED_LIMITS,
     },
   });
 }

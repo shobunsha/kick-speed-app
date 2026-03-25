@@ -35,6 +35,14 @@ export const FALLBACK_BALL_SHAPE_THRESHOLDS = {
   minArea: 110,
   minDisplacementPx: 18,
 };
+export const IOS_SAFARI_RELAXED_LIMITS = {
+  detectionAreaMin: 56,
+  maxTrackDistancePx: 360,
+  fallbackMinArea: 84,
+  fallbackMinDisplacementPx: 14,
+  minStableFrames: 1,
+  minCandidateFrames: 1,
+};
 export const BALL_DIAMETER_METERS = 0.22;
 export const DEFAULT_PIXELS_PER_METER = 280;
 export const RESULT_SPEED_CLAMP = {
