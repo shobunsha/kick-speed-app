@@ -7,7 +7,7 @@ export const RECORDING_DURATION_MS = 3000;
 export const ANALYSIS_FRAME_INTERVAL_MS = 80;
 export const MOTION_THRESHOLD = 28;
 export const DETECTION_AREA_LIMITS = {
-  min: 100,
+  min: 72,
   max: 9000,
 };
 export const DETECTION_ROI = {
@@ -20,13 +20,20 @@ export const BALL_SHAPE_THRESHOLDS = {
   minCircularity: 0.38,
   minAspectRatio: 0.48,
   maxAspectRatio: 2,
-  maxTrackDistancePx: 200,
+  maxTrackDistancePx: 280,
 };
 export const MIN_DISPLACEMENT_PIXELS = 8;
 export const ANALYSIS_SAMPLE_LIMITS = {
-  minCandidateFrames: 2,
-  minStableFrames: 2,
+  minCandidateFrames: 1,
+  minStableFrames: 1,
   maxFramesForSpeed: 5,
+};
+export const FALLBACK_BALL_SHAPE_THRESHOLDS = {
+  minCircularity: 0.18,
+  minAspectRatio: 0.35,
+  maxAspectRatio: 2.6,
+  minArea: 110,
+  minDisplacementPx: 18,
 };
 export const BALL_DIAMETER_METERS = 0.22;
 export const DEFAULT_PIXELS_PER_METER = 280;

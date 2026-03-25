@@ -6,6 +6,7 @@ import {
   DEFAULT_PIXELS_PER_METER,
   DETECTION_AREA_LIMITS,
   DETECTION_ROI,
+  FALLBACK_BALL_SHAPE_THRESHOLDS,
   MIN_DISPLACEMENT_PIXELS,
   MOTION_THRESHOLD,
   RESULT_SPEED_CLAMP,
@@ -22,6 +23,9 @@ type DetectionResult = {
   sample: AnalysisSample | null;
   roiCandidateCount: number;
   acceptedCandidateCount: number;
+  normalAcceptedCount: number;
+  fallbackAcceptedCount: number;
+  mode: 'none' | 'normal' | 'fallback';
 };
 
 export async function analyzeKickVideo({
@@ -51,6 +55,9 @@ export async function analyzeKickVideo({
     let previousTrackedSample: AnalysisSample | null = null;
     let roiCandidateCount = 0;
     let acceptedCandidateCount = 0;
+    let normalAcceptedCount = 0;
+    let fallbackAcceptedCount = 0;
+    let detectedModes: Array<'normal' | 'fallback'> = [];
 
     for (
       let currentTime = 0;
@@ -70,9 +77,14 @@ export async function analyzeKickVideo({
       const sample = detection.sample;
       roiCandidateCount += detection.roiCandidateCount;
       acceptedCandidateCount += detection.acceptedCandidateCount;
+      normalAcceptedCount += detection.normalAcceptedCount;
+      fallbackAcceptedCount += detection.fallbackAcceptedCount;
 
       if (sample) {
         samples.push(sample);
+        if (detection.mode !== 'none') {
+          detectedModes.push(detection.mode);
+        }
         if (sample.area > 0) {
           previousTrackedSample = sample;
         }
@@ -90,13 +102,38 @@ export async function analyzeKickVideo({
 
     const candidateSamples = samples.filter((sample) => sample.area > 0);
     const filteredSamples = filterStableSamples(candidateSamples);
+    const modeLabel = detectedModes.includes('normal')
+      ? '通常判定'
+      : detectedModes.includes('fallback')
+        ? 'fallback判定'
+        : '未採用';
+
+    if (candidateSamples.length < 2) {
+      logAnalysisFailure({
+        roiCandidateCount,
+        acceptedCandidateCount,
+        normalAcceptedCount,
+        fallbackAcceptedCount,
+        candidateFrames: candidateSamples.length,
+        adoptedFrames: filteredSamples.length,
+        reason: '速度計算に必要なフレーム不足',
+        mode: modeLabel,
+      });
+      throw new Error(
+        'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。'
+      );
+    }
 
     if (candidateSamples.length < ANALYSIS_SAMPLE_LIMITS.minCandidateFrames) {
       logAnalysisFailure({
         roiCandidateCount,
         acceptedCandidateCount,
+        normalAcceptedCount,
+        fallbackAcceptedCount,
+        candidateFrames: candidateSamples.length,
         adoptedFrames: filteredSamples.length,
         reason: '候補フレーム不足',
+        mode: modeLabel,
       });
       throw new Error(
         'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。'
@@ -107,8 +144,12 @@ export async function analyzeKickVideo({
       logAnalysisFailure({
         roiCandidateCount,
         acceptedCandidateCount,
+        normalAcceptedCount,
+        fallbackAcceptedCount,
+        candidateFrames: candidateSamples.length,
         adoptedFrames: filteredSamples.length,
         reason: '採用フレーム不足',
+        mode: modeLabel,
       });
       throw new Error(
         'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。'
@@ -119,7 +160,11 @@ export async function analyzeKickVideo({
       roi: DETECTION_ROI,
       roiCandidateCount,
       acceptedCandidateCount,
+      normalAcceptedCount,
+      fallbackAcceptedCount,
+      candidateFrames: candidateSamples.length,
       adoptedFrames: filteredSamples.length,
+      mode: modeLabel,
     });
 
     const estimatedSpeedKmh = estimateInitialSpeedKmh(filteredSamples);
@@ -187,6 +232,9 @@ function detectMotionSample(
         },
         roiCandidateCount: 0,
         acceptedCandidateCount: 0,
+        normalAcceptedCount: 0,
+        fallbackAcceptedCount: 0,
+        mode: 'none',
       };
     }
 
@@ -204,6 +252,9 @@ function detectMotionSample(
     let bestScore = Number.NEGATIVE_INFINITY;
     let roiCandidates = 0;
     let acceptedCandidates = 0;
+    let normalAccepted = 0;
+    let fallbackAccepted = 0;
+    let bestMode: DetectionResult['mode'] = 'none';
 
     for (let index = 0; index < contours.size(); index += 1) {
       const contour = contours.get(index);
@@ -230,35 +281,53 @@ function detectMotionSample(
 
       roiCandidates += 1;
 
-      if (
-        circularity < BALL_SHAPE_THRESHOLDS.minCircularity ||
-        aspectRatio < BALL_SHAPE_THRESHOLDS.minAspectRatio ||
-        aspectRatio > BALL_SHAPE_THRESHOLDS.maxAspectRatio
-      ) {
-        contour.delete();
-        continue;
-      }
-
-      acceptedCandidates += 1;
-
       const trackDistance = previousTrackedSample
         ? Math.hypot(
             centerX - previousTrackedSample.centerX,
             centerY - previousTrackedSample.centerY
           )
-        : 0;
+        : FALLBACK_BALL_SHAPE_THRESHOLDS.minDisplacementPx;
+      const normalQualified =
+        circularity >= BALL_SHAPE_THRESHOLDS.minCircularity &&
+        aspectRatio >= BALL_SHAPE_THRESHOLDS.minAspectRatio &&
+        aspectRatio <= BALL_SHAPE_THRESHOLDS.maxAspectRatio;
+      const fallbackQualified =
+        area >= FALLBACK_BALL_SHAPE_THRESHOLDS.minArea &&
+        circularity >= FALLBACK_BALL_SHAPE_THRESHOLDS.minCircularity &&
+        aspectRatio >= FALLBACK_BALL_SHAPE_THRESHOLDS.minAspectRatio &&
+        aspectRatio <= FALLBACK_BALL_SHAPE_THRESHOLDS.maxAspectRatio &&
+        trackDistance >= FALLBACK_BALL_SHAPE_THRESHOLDS.minDisplacementPx;
+
+      if (!normalQualified && !fallbackQualified) {
+        contour.delete();
+        continue;
+      }
+
+      acceptedCandidates += 1;
+      if (normalQualified) {
+        normalAccepted += 1;
+      } else {
+        fallbackAccepted += 1;
+      }
+
       const trackingPenalty =
         previousTrackedSample && trackDistance > BALL_SHAPE_THRESHOLDS.maxTrackDistancePx
-          ? -4
+          ? -2.2
           : 0;
       const proximityScore = previousTrackedSample
         ? Math.max(0, 1 - trackDistance / BALL_SHAPE_THRESHOLDS.maxTrackDistancePx)
-        : 0.35;
-      const areaScore = Math.min(area / 1200, 1.2);
-      const circularityScore = circularity * 1.8;
+        : 0.45;
+      const areaScore = Math.min(area / 1100, 1.25);
+      const circularityScore = circularity * (normalQualified ? 1.8 : 0.9);
       const aspectScore = 1 - Math.min(Math.abs(1 - aspectRatio), 1);
+      const fallbackBoost = fallbackQualified && !normalQualified ? 0.7 : 0;
       const candidateScore =
-        areaScore + circularityScore + aspectScore + proximityScore * 2.4 + trackingPenalty;
+        areaScore +
+        circularityScore +
+        aspectScore +
+        proximityScore * 2.2 +
+        fallbackBoost +
+        trackingPenalty;
 
       const candidate: AnalysisSample = {
         time,
@@ -272,6 +341,7 @@ function detectMotionSample(
       if (!bestSample || candidateScore > bestScore) {
         bestSample = candidate;
         bestScore = candidateScore;
+        bestMode = normalQualified ? 'normal' : 'fallback';
       }
 
       contour.delete();
@@ -285,6 +355,9 @@ function detectMotionSample(
       sample: bestSample,
       roiCandidateCount: roiCandidates,
       acceptedCandidateCount: acceptedCandidates,
+      normalAcceptedCount: normalAccepted,
+      fallbackAcceptedCount: fallbackAccepted,
+      mode: bestMode,
     };
   } finally {
     source.delete();
@@ -297,6 +370,10 @@ function detectMotionSample(
 
 function filterStableSamples(samples: AnalysisSample[]): AnalysisSample[] {
   if (samples.length < ANALYSIS_SAMPLE_LIMITS.minCandidateFrames) {
+    return samples;
+  }
+
+  if (samples.length <= 2) {
     return samples;
   }
 
@@ -320,7 +397,7 @@ function filterStableSamples(samples: AnalysisSample[]): AnalysisSample[] {
     return filtered;
   }
 
-  return samples.slice(0, Math.min(samples.length, ANALYSIS_SAMPLE_LIMITS.minStableFrames));
+  return samples.slice(0, Math.min(samples.length, 3));
 }
 
 function isInsideDetectionRoi(
@@ -338,6 +415,10 @@ function isInsideDetectionRoi(
 }
 
 function estimateInitialSpeedKmh(samples: AnalysisSample[]): number {
+  if (samples.length < 2) {
+    throw new Error('速度推定に必要な移動量が不足しています。');
+  }
+
   const velocities: number[] = [];
 
   for (let index = 1; index < samples.length; index += 1) {
@@ -360,6 +441,27 @@ function estimateInitialSpeedKmh(samples: AnalysisSample[]): number {
     velocities.push(metersPerSecond * 3.6);
   }
 
+  if (!velocities.length && samples.length >= 2) {
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    const elapsed = last.time - first.time;
+    const displacementPx = Math.hypot(last.centerX - first.centerX, last.centerY - first.centerY);
+
+    if (elapsed > 0 && displacementPx >= FALLBACK_BALL_SHAPE_THRESHOLDS.minDisplacementPx) {
+      const estimatedBallDiameterPx = Math.max((first.radiusPx + last.radiusPx) / 2 * 2, 1);
+      const pixelsPerMeter = Math.max(
+        estimatedBallDiameterPx / BALL_DIAMETER_METERS,
+        DEFAULT_PIXELS_PER_METER
+      );
+      const metersPerSecond = displacementPx / pixelsPerMeter / elapsed;
+      velocities.push(metersPerSecond * 3.6);
+      console.info('[analyzeKickVideo] 速度計算を fallback 差分で実行', {
+        displacementPx,
+        elapsed,
+      });
+    }
+  }
+
   if (!velocities.length) {
     throw new Error('速度推定に必要な移動量が不足しています。');
   }
@@ -375,19 +477,36 @@ function clamp(value: number, min: number, max: number) {
 function logAnalysisFailure({
   roiCandidateCount,
   acceptedCandidateCount,
+  normalAcceptedCount,
+  fallbackAcceptedCount,
+  candidateFrames,
   adoptedFrames,
   reason,
+  mode,
 }: {
   roiCandidateCount: number;
   acceptedCandidateCount: number;
+  normalAcceptedCount: number;
+  fallbackAcceptedCount: number;
+  candidateFrames: number;
   adoptedFrames: number;
   reason: string;
+  mode: string;
 }) {
   console.warn('[analyzeKickVideo] 解析失敗', {
     roi: DETECTION_ROI,
     roiCandidateCount,
     acceptedCandidateCount,
+    normalAcceptedCount,
+    fallbackAcceptedCount,
+    candidateFrames,
     adoptedFrames,
     reason,
+    mode,
+    thresholds: {
+      area: DETECTION_AREA_LIMITS,
+      normalShape: BALL_SHAPE_THRESHOLDS,
+      fallbackShape: FALLBACK_BALL_SHAPE_THRESHOLDS,
+    },
   });
 }
