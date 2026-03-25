@@ -25,7 +25,7 @@ export default function HomePage() {
       return null;
     }
 
-    const score = buildKickScore(analysisResult.estimatedSpeedKmh);
+    const score = buildKickScore(analysisResult);
     const rank = buildRank(score);
 
     return {

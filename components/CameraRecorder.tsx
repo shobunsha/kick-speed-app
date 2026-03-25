@@ -19,10 +19,10 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
   const chunksRef = useRef<BlobPart[]>([]);
   const countdownTimerRef = useRef<number | null>(null);
   const stopTimerRef = useRef<number | null>(null);
+  const autoStartRef = useRef(false);
   const [state, setState] = useState<RecorderState>('idle');
   const [countdown, setCountdown] = useState(COUNTDOWN_START);
   const [error, setError] = useState<string | null>(null);
-  const [isLandscape, setIsLandscape] = useState(true);
 
   const statusText = useMemo(() => {
     switch (state) {
@@ -36,12 +36,10 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
         return '解析用の動画をまとめています';
       case 'error':
         return '撮影を開始できませんでした';
-      case 'idle':
-        return isLandscape ? 'ガイド枠の中でボールを蹴る準備をしてください' : '横向きでご利用ください';
       default:
-        return 'ガイド枠の中でボールを蹴る準備をしてください';
+        return 'このあたりを横切るように蹴ってください';
     }
-  }, [countdown, isLandscape, state]);
+  }, [countdown, state]);
 
   const supportText = useMemo(() => {
     switch (state) {
@@ -50,25 +48,15 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
       case 'countdown':
         return '位置を固定したまま待ち、表示が「今蹴ってください」に変わったらキックしてください。';
       case 'recording':
-        return 'ボールがガイド中央を横切るように、今すぐキックしてください。';
+        return 'このあたりを横切るように、今すぐキックしてください。';
       case 'processing':
         return '録画後に自動で解析へ進みます。';
       default:
-        return isLandscape
-          ? `ボールと蹴り出し方向がガイド中央に入る位置にスマホを固定してください。録画時間は約${durationMs / 1000}秒です。`
-          : 'iPhoneは横向きでご利用ください。ボールが横切る向きで撮影すると安定します。';
+        return `カメラが映ったら位置を合わせ、そのまま自動開始を待ってください。録画時間は約${durationMs / 1000}秒です。`;
     }
-  }, [durationMs, isLandscape, state]);
+  }, [durationMs, state]);
 
   useEffect(() => {
-    const updateOrientation = () => {
-      setIsLandscape(window.innerWidth >= window.innerHeight);
-    };
-
-    updateOrientation();
-    window.addEventListener('resize', updateOrientation);
-    window.addEventListener('orientationchange', updateOrientation);
-
     if (videoRef.current) {
       videoRef.current.muted = true;
       videoRef.current.autoplay = true;
@@ -77,9 +65,12 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
       videoRef.current.setAttribute('webkit-playsinline', 'true');
     }
 
+    if (!autoStartRef.current) {
+      autoStartRef.current = true;
+      void prepareCamera();
+    }
+
     return () => {
-      window.removeEventListener('resize', updateOrientation);
-      window.removeEventListener('orientationchange', updateOrientation);
       cleanup();
     };
   }, []);
@@ -118,12 +109,6 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
 
       if (unsupportedMessage) {
         setError(unsupportedMessage);
-        setState('error');
-        return;
-      }
-
-      if (!isLandscape) {
-        setError('横向きでご利用ください。ボールが横切る向きで撮影すると安定します。');
         setState('error');
         return;
       }
@@ -248,7 +233,6 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
         >
           <span className="roiGuideLabel">ガイド中央を通す</span>
         </div>
-        {!isLandscape && <div className="orientationOverlay">横向きでご利用ください</div>}
         {state === 'countdown' && <div className="countdownOverlay">{countdown}</div>}
         {state === 'recording' && <div className="shootNowOverlay">今蹴ってください</div>}
         {state === 'idle' && <div className="cameraOverlay">背面カメラを使います</div>}
@@ -262,9 +246,9 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
       <div className="ctaStack">
         <PrimaryButton
           onClick={() => void prepareCamera()}
-          disabled={!isLandscape || state === 'preparing' || state === 'countdown' || state === 'recording'}
+          disabled={state === 'preparing' || state === 'countdown' || state === 'recording'}
         >
-          {state === 'idle' || state === 'error' ? '撮影を開始' : '準備中'}
+          {state === 'error' ? 'もう一度カメラを起動' : '準備中'}
         </PrimaryButton>
         <PrimaryButton
           variant="secondary"

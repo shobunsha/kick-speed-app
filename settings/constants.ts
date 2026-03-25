@@ -11,10 +11,14 @@ export const DETECTION_AREA_LIMITS = {
   max: 9000,
 };
 export const DETECTION_ROI = {
-  left: 0.08,
-  right: 0.92,
-  top: 0.38,
-  bottom: 0.72,
+  left: 0.04,
+  right: 0.96,
+  top: 0.28,
+  bottom: 0.84,
+};
+export const POWER_SCORE_FLOOR = {
+  mediumMotion: 22,
+  strongMotion: 40,
 };
 export const BALL_SHAPE_THRESHOLDS = {
   minCircularity: 0.38,
