@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PrimaryButton } from '@/components/PrimaryButton';
-import { COUNTDOWN_START } from '@/settings/constants';
+import { COUNTDOWN_START, DETECTION_ROI } from '@/settings/constants';
 
 type CameraRecorderProps = {
   durationMs: number;
@@ -26,19 +26,34 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
   const statusText = useMemo(() => {
     switch (state) {
       case 'preparing':
-        return 'カメラを起動しています';
+        return '準備中です。ガイド枠にボールを合わせてください';
       case 'countdown':
-        return `まもなく開始 ${countdown}`;
+        return `まもなく開始です。開始まで ${countdown}`;
       case 'recording':
-        return '録画中です。キックしてください';
+        return '今蹴ってください';
       case 'processing':
-        return '録画を処理しています';
+        return '解析用の動画をまとめています';
       case 'error':
-        return 'カメラの利用に失敗しました';
+        return '撮影を開始できませんでした';
       default:
-        return '準備ができたらスタートします';
+        return 'ガイド枠の中でボールを蹴る準備をしてください';
     }
   }, [countdown, state]);
+
+  const supportText = useMemo(() => {
+    switch (state) {
+      case 'preparing':
+        return '背面カメラを起動しています。少しお待ちください。';
+      case 'countdown':
+        return '位置を固定したまま待ち、表示が変わったらすぐキックしてください。';
+      case 'recording':
+        return 'ボールがガイド範囲内を通るように、今すぐキックしてください。';
+      case 'processing':
+        return '録画後に自動で解析へ進みます。';
+      default:
+        return `ボールと蹴り出し方向がガイド範囲に入る位置にスマホを固定してください。録画時間は約${durationMs / 1000}秒です。`;
+    }
+  }, [durationMs, state]);
 
   useEffect(() => {
     if (videoRef.current) {
@@ -197,15 +212,24 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
     <section className="cameraCard">
       <div className="videoShell">
         <video ref={videoRef} className="cameraVideo" playsInline muted autoPlay />
+        <div
+          className="roiGuide"
+          aria-hidden="true"
+          style={{
+            left: `${DETECTION_ROI.left * 100}%`,
+            top: `${DETECTION_ROI.top * 100}%`,
+            width: `${(DETECTION_ROI.right - DETECTION_ROI.left) * 100}%`,
+            height: `${(DETECTION_ROI.bottom - DETECTION_ROI.top) * 100}%`,
+          }}
+        >
+          <span className="roiGuideLabel">この範囲でキック</span>
+        </div>
         {state === 'countdown' && <div className="countdownOverlay">{countdown}</div>}
         {state === 'idle' && <div className="cameraOverlay">背面カメラを使います</div>}
       </div>
 
       <p className="statusText">{statusText}</p>
-      <p className="supportText">
-        ボールと蹴り出し方向が見える位置にスマホを固定してください。録画時間は約
-        {durationMs / 1000}秒です。
-      </p>
+      <p className="supportText">{supportText}</p>
 
       {error && <p className="errorText">{error}</p>}
 

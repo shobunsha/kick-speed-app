@@ -1,5 +1,6 @@
 import {
   ANALYSIS_FRAME_INTERVAL_MS,
+  ANALYSIS_SAMPLE_LIMITS,
   BALL_DIAMETER_METERS,
   BALL_SHAPE_THRESHOLDS,
   DEFAULT_PIXELS_PER_METER,
@@ -16,6 +17,12 @@ import type {
   OpenCvContourVector,
   OpenCvModule,
 } from '@/lib/types';
+
+type DetectionResult = {
+  sample: AnalysisSample | null;
+  roiCandidateCount: number;
+  acceptedCandidateCount: number;
+};
 
 export async function analyzeKickVideo({
   cv,
@@ -42,6 +49,8 @@ export async function analyzeKickVideo({
     const samples: AnalysisSample[] = [];
     let previousGray: InstanceType<OpenCvModule['Mat']> | null = null;
     let previousTrackedSample: AnalysisSample | null = null;
+    let roiCandidateCount = 0;
+    let acceptedCandidateCount = 0;
 
     for (
       let currentTime = 0;
@@ -51,13 +60,16 @@ export async function analyzeKickVideo({
       await seekVideo(video, currentTime);
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-      const sample = detectMotionSample(
+      const detection = detectMotionSample(
         cv,
         imageData,
         previousGray,
         previousTrackedSample,
         currentTime
       );
+      const sample = detection.sample;
+      roiCandidateCount += detection.roiCandidateCount;
+      acceptedCandidateCount += detection.acceptedCandidateCount;
 
       if (sample) {
         samples.push(sample);
@@ -76,11 +88,40 @@ export async function analyzeKickVideo({
       previousGray.delete();
     }
 
-    if (samples.length < 2) {
-      throw new Error('ボールの動きを十分に検出できませんでした。撮影位置を調整して再挑戦してください。');
+    const candidateSamples = samples.filter((sample) => sample.area > 0);
+    const filteredSamples = filterStableSamples(candidateSamples);
+
+    if (candidateSamples.length < ANALYSIS_SAMPLE_LIMITS.minCandidateFrames) {
+      logAnalysisFailure({
+        roiCandidateCount,
+        acceptedCandidateCount,
+        adoptedFrames: filteredSamples.length,
+        reason: '候補フレーム不足',
+      });
+      throw new Error(
+        'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。'
+      );
     }
 
-    const filteredSamples = filterStableSamples(samples);
+    if (filteredSamples.length < ANALYSIS_SAMPLE_LIMITS.minStableFrames) {
+      logAnalysisFailure({
+        roiCandidateCount,
+        acceptedCandidateCount,
+        adoptedFrames: filteredSamples.length,
+        reason: '採用フレーム不足',
+      });
+      throw new Error(
+        'ボールがガイド範囲外か、動きの検出フレームが不足しました。カメラ位置を少し近づけて再挑戦してください。'
+      );
+    }
+
+    console.info('[analyzeKickVideo] 解析成功', {
+      roi: DETECTION_ROI,
+      roiCandidateCount,
+      acceptedCandidateCount,
+      adoptedFrames: filteredSamples.length,
+    });
+
     const estimatedSpeedKmh = estimateInitialSpeedKmh(filteredSamples);
 
     return {
@@ -122,7 +163,7 @@ function detectMotionSample(
   previousGray: InstanceType<OpenCvModule['Mat']> | null,
   previousTrackedSample: AnalysisSample | null,
   time: number
-): AnalysisSample | null {
+): DetectionResult {
   const source = cv.matFromImageData(imageData);
   const gray = new cv.Mat();
   const diff = new cv.Mat();
@@ -136,12 +177,16 @@ function detectMotionSample(
 
     if (!previousGray) {
       return {
-        time,
-        centerX: 0,
-        centerY: 0,
-        area: 0,
-        radiusPx: 0,
-        grayFrame: gray,
+        sample: {
+          time,
+          centerX: 0,
+          centerY: 0,
+          area: 0,
+          radiusPx: 0,
+          grayFrame: gray,
+        },
+        roiCandidateCount: 0,
+        acceptedCandidateCount: 0,
       };
     }
 
@@ -157,6 +202,8 @@ function detectMotionSample(
 
     let bestSample: AnalysisSample | null = null;
     let bestScore = Number.NEGATIVE_INFINITY;
+    let roiCandidates = 0;
+    let acceptedCandidates = 0;
 
     for (let index = 0; index < contours.size(); index += 1) {
       const contour = contours.get(index);
@@ -181,6 +228,8 @@ function detectMotionSample(
         continue;
       }
 
+      roiCandidates += 1;
+
       if (
         circularity < BALL_SHAPE_THRESHOLDS.minCircularity ||
         aspectRatio < BALL_SHAPE_THRESHOLDS.minAspectRatio ||
@@ -189,6 +238,8 @@ function detectMotionSample(
         contour.delete();
         continue;
       }
+
+      acceptedCandidates += 1;
 
       const trackDistance = previousTrackedSample
         ? Math.hypot(
@@ -230,7 +281,11 @@ function detectMotionSample(
       gray.delete();
     }
 
-    return bestSample;
+    return {
+      sample: bestSample,
+      roiCandidateCount: roiCandidates,
+      acceptedCandidateCount: acceptedCandidates,
+    };
   } finally {
     source.delete();
     diff.delete();
@@ -241,29 +296,31 @@ function detectMotionSample(
 }
 
 function filterStableSamples(samples: AnalysisSample[]): AnalysisSample[] {
-  const valid = samples.filter((sample) => sample.area > 0);
-
-  if (valid.length < 2) {
-    return valid;
+  if (samples.length < ANALYSIS_SAMPLE_LIMITS.minCandidateFrames) {
+    return samples;
   }
 
-  const filtered = [valid[0]];
+  const filtered = [samples[0]];
 
-  for (let index = 1; index < valid.length; index += 1) {
+  for (let index = 1; index < samples.length; index += 1) {
     const previous = filtered[filtered.length - 1];
-    const current = valid[index];
+    const current = samples[index];
     const displacement = Math.hypot(current.centerX - previous.centerX, current.centerY - previous.centerY);
 
     if (displacement >= MIN_DISPLACEMENT_PIXELS) {
       filtered.push(current);
     }
 
-    if (filtered.length >= 4) {
+    if (filtered.length >= ANALYSIS_SAMPLE_LIMITS.maxFramesForSpeed) {
       break;
     }
   }
 
-  return filtered;
+  if (filtered.length >= ANALYSIS_SAMPLE_LIMITS.minStableFrames) {
+    return filtered;
+  }
+
+  return samples.slice(0, Math.min(samples.length, ANALYSIS_SAMPLE_LIMITS.minStableFrames));
 }
 
 function isInsideDetectionRoi(
@@ -313,4 +370,24 @@ function estimateInitialSpeedKmh(samples: AnalysisSample[]): number {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function logAnalysisFailure({
+  roiCandidateCount,
+  acceptedCandidateCount,
+  adoptedFrames,
+  reason,
+}: {
+  roiCandidateCount: number;
+  acceptedCandidateCount: number;
+  adoptedFrames: number;
+  reason: string;
+}) {
+  console.warn('[analyzeKickVideo] 解析失敗', {
+    roi: DETECTION_ROI,
+    roiCandidateCount,
+    acceptedCandidateCount,
+    adoptedFrames,
+    reason,
+  });
 }
