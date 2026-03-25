@@ -22,6 +22,7 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
   const [state, setState] = useState<RecorderState>('idle');
   const [countdown, setCountdown] = useState(COUNTDOWN_START);
   const [error, setError] = useState<string | null>(null);
+  const [isLandscape, setIsLandscape] = useState(true);
 
   const statusText = useMemo(() => {
     switch (state) {
@@ -35,10 +36,12 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
         return '解析用の動画をまとめています';
       case 'error':
         return '撮影を開始できませんでした';
+      case 'idle':
+        return isLandscape ? 'ガイド枠の中でボールを蹴る準備をしてください' : '横向きでご利用ください';
       default:
         return 'ガイド枠の中でボールを蹴る準備をしてください';
     }
-  }, [countdown, state]);
+  }, [countdown, isLandscape, state]);
 
   const supportText = useMemo(() => {
     switch (state) {
@@ -51,11 +54,21 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
       case 'processing':
         return '録画後に自動で解析へ進みます。';
       default:
-        return `ボールと蹴り出し方向がガイド中央に入る位置にスマホを固定してください。録画時間は約${durationMs / 1000}秒です。`;
+        return isLandscape
+          ? `ボールと蹴り出し方向がガイド中央に入る位置にスマホを固定してください。録画時間は約${durationMs / 1000}秒です。`
+          : 'iPhoneは横向きでご利用ください。ボールが横切る向きで撮影すると安定します。';
     }
-  }, [durationMs, state]);
+  }, [durationMs, isLandscape, state]);
 
   useEffect(() => {
+    const updateOrientation = () => {
+      setIsLandscape(window.innerWidth >= window.innerHeight);
+    };
+
+    updateOrientation();
+    window.addEventListener('resize', updateOrientation);
+    window.addEventListener('orientationchange', updateOrientation);
+
     if (videoRef.current) {
       videoRef.current.muted = true;
       videoRef.current.autoplay = true;
@@ -65,6 +78,8 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
     }
 
     return () => {
+      window.removeEventListener('resize', updateOrientation);
+      window.removeEventListener('orientationchange', updateOrientation);
       cleanup();
     };
   }, []);
@@ -103,6 +118,12 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
 
       if (unsupportedMessage) {
         setError(unsupportedMessage);
+        setState('error');
+        return;
+      }
+
+      if (!isLandscape) {
+        setError('横向きでご利用ください。ボールが横切る向きで撮影すると安定します。');
         setState('error');
         return;
       }
@@ -227,6 +248,7 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
         >
           <span className="roiGuideLabel">ガイド中央を通す</span>
         </div>
+        {!isLandscape && <div className="orientationOverlay">横向きでご利用ください</div>}
         {state === 'countdown' && <div className="countdownOverlay">{countdown}</div>}
         {state === 'recording' && <div className="shootNowOverlay">今蹴ってください</div>}
         {state === 'idle' && <div className="cameraOverlay">背面カメラを使います</div>}
@@ -240,7 +262,7 @@ export function CameraRecorder({ durationMs, onRecorded, onCancel }: CameraRecor
       <div className="ctaStack">
         <PrimaryButton
           onClick={() => void prepareCamera()}
-          disabled={state === 'preparing' || state === 'countdown' || state === 'recording'}
+          disabled={!isLandscape || state === 'preparing' || state === 'countdown' || state === 'recording'}
         >
           {state === 'idle' || state === 'error' ? '撮影を開始' : '準備中'}
         </PrimaryButton>

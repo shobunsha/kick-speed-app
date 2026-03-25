@@ -156,18 +156,22 @@ export default function HomePage() {
       {step === 'result' && analysisResult && summary && (
         <ScreenContainer
           eyebrow="結果"
-          title="推定初速の結果"
-          description="キック直後の動きから算出した参考値です。イベント体験用の表示としてご利用ください。"
+          title="キックパワー結果"
+          description="イベント向けの体験結果です。キックパワーを主役に、推定初速は参考値として表示しています。"
           footer={`ランク一覧: ${RANK_LABELS.join(' / ')}`}
         >
           <section className="resultHero">
-            <p className="resultLabel">推定初速（参考値）</p>
-            <p className="resultSpeed">{analysisResult.estimatedSpeedKmh.toFixed(1)}</p>
-            <p className="resultUnit">km/h</p>
+            <p className="resultLabel">キックパワー</p>
+            <p className="resultSpeed">{summary.score}</p>
+            <p className="resultUnit">/ 100 pt</p>
           </section>
 
           <section className="metricGrid">
-            <MetricCard label="キックパワー" value={`${summary.score}`} subValue="/ 100 pt" />
+            <MetricCard
+              label="推定初速"
+              value={`${analysisResult.estimatedSpeedKmh.toFixed(0)}`}
+              subValue="km/h 参考値"
+            />
             <MetricCard label="ランク" value={summary.rank} subValue="イベント判定" />
             <MetricCard
               label="移動追跡"

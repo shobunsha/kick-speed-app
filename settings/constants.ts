@@ -11,10 +11,10 @@ export const DETECTION_AREA_LIMITS = {
   max: 9000,
 };
 export const DETECTION_ROI = {
-  left: 0.06,
-  right: 0.94,
-  top: 0.32,
-  bottom: 0.97,
+  left: 0.08,
+  right: 0.92,
+  top: 0.38,
+  bottom: 0.72,
 };
 export const BALL_SHAPE_THRESHOLDS = {
   minCircularity: 0.38,
@@ -46,8 +46,16 @@ export const IOS_SAFARI_RELAXED_LIMITS = {
 export const BALL_DIAMETER_METERS = 0.22;
 export const DEFAULT_PIXELS_PER_METER = 280;
 export const RESULT_SPEED_CLAMP = {
-  min: 5,
-  max: 140,
+  min: 8,
+  max: 82,
+};
+export const SPEED_ESTIMATION = {
+  roundStepKmh: 2,
+  fallbackScale: 0.62,
+  fallbackMaxKmh: 56,
+  outlierHighMultiplier: 1.55,
+  outlierLowMultiplier: 0.55,
+  minimumTrustedSpeedKmh: 8,
 };
 
 export const RANK_THRESHOLDS = [

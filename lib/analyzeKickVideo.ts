@@ -11,6 +11,7 @@ import {
   MIN_DISPLACEMENT_PIXELS,
   MOTION_THRESHOLD,
   RESULT_SPEED_CLAMP,
+  SPEED_ESTIMATION,
 } from '@/settings/constants';
 import type {
   AnalysisResult,
@@ -489,8 +490,12 @@ function estimateInitialSpeedKmh(samples: AnalysisSample[]): number {
     throw new Error('速度推定に必要な移動量が不足しています。');
   }
 
-  const topVelocity = Math.max(...velocities);
-  return clamp(topVelocity, RESULT_SPEED_CLAMP.min, RESULT_SPEED_CLAMP.max);
+  const stabilizedSpeed = stabilizeVelocities(velocities);
+  console.info('[analyzeKickVideo] stabilized velocities', {
+    raw: velocities,
+    stabilizedSpeed,
+  });
+  return stabilizedSpeed;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -519,7 +524,15 @@ function buildMotionFallbackResult(
     estimatedBallDiameterPx / BALL_DIAMETER_METERS,
     DEFAULT_PIXELS_PER_METER
   );
-  const estimatedSpeedKmh = clamp((displacementPx / pixelsPerMeter / elapsed) * 3.6, 5, 110);
+  const rawSpeedKmh = (displacementPx / pixelsPerMeter / elapsed) * 3.6;
+  const estimatedSpeedKmh = roundToStep(
+    clamp(
+      Math.max(rawSpeedKmh * SPEED_ESTIMATION.fallbackScale, SPEED_ESTIMATION.minimumTrustedSpeedKmh),
+      RESULT_SPEED_CLAMP.min,
+      SPEED_ESTIMATION.fallbackMaxKmh
+    ),
+    SPEED_ESTIMATION.roundStepKmh
+  );
 
   return {
     estimatedSpeedKmh,
@@ -548,6 +561,31 @@ function detectClientDevice() {
     isIosSafari: isIPhone && isSafari,
     userAgent,
   };
+}
+
+function stabilizeVelocities(velocities: number[]) {
+  const sorted = [...velocities].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const filtered = sorted.filter(
+    (value) =>
+      value >= median * SPEED_ESTIMATION.outlierLowMultiplier &&
+      value <= median * SPEED_ESTIMATION.outlierHighMultiplier
+  );
+  const target = (filtered.length ? filtered : sorted).slice(-3);
+  const average = target.reduce((sum, value) => sum + value, 0) / target.length;
+
+  return roundToStep(
+    clamp(
+      Math.max(average, SPEED_ESTIMATION.minimumTrustedSpeedKmh),
+      RESULT_SPEED_CLAMP.min,
+      RESULT_SPEED_CLAMP.max
+    ),
+    SPEED_ESTIMATION.roundStepKmh
+  );
+}
+
+function roundToStep(value: number, step: number) {
+  return Math.round(value / step) * step;
 }
 
 function getDetectionAreaMin(device: ReturnType<typeof detectClientDevice>) {
